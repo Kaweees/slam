@@ -14,7 +14,7 @@ fi
 mkdir -p "$VOCAB_DIR"
 
 VOCAB_URL="https://github.com/UZ-SLAMLab/ORB_SLAM3/raw/master/Vocabulary/ORBvoc.txt.tar.gz"
-TMP_FILE="$(mktemp)"
+TMP_FILE="$(mktemp /tmp/orbvoc.XXXXXXXXXX)"
 
 echo "Downloading ORB vocabulary..."
 curl -fSL "$VOCAB_URL" -o "$TMP_FILE"
