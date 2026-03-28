@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Large vocabulary files (download via scripts/download_vocab.sh)
+vocab/ORBvoc.txt
