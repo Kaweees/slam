@@ -19,8 +19,9 @@ def write_settings_yaml(path: str, width: int = 640, height: int = 480,
                         focal: float = None, fps: float = 30.0):
     """Write an OpenCV FileStorage YAML settings file for ORB-SLAM3."""
     if focal is None:
-        # ~65° horizontal FOV, a reasonable default for dashcam/action camera
-        focal = float(width) * 0.55
+        # OS04C10 camera intrinsics (from openpilot calibration):
+        # native 1344x760, focal=425.25 (567.0 / 4 * 3)
+        focal = 425.25 * (float(width) / 1344.0)
     cx = width / 2.0
     cy = height / 2.0
 
