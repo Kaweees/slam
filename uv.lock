@@ -324,6 +324,12 @@ wheels = [
 ]
 
 [[package]]
+name = "cereal"
+version = "0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/76/7d21fe87cdf30b6a4d1dcc0ebd853feb8493b5f0b93985444a5f58d1aae4/cereal-0.2.tar.gz", hash = "sha256:9e06439706f65f3210d4082ef1add0a1a342352247a0363a7147ed132e3c793f", size = 3693, upload-time = "2010-01-31T04:28:44.239Z" }
+
+[[package]]
 name = "certifi"
 version = "2026.2.25"
 source = { registry = "https://pypi.org/simple" }
@@ -1721,9 +1727,15 @@ dependencies = [
     { name = "unitree-sdk2py" },
 ]
 
+[package.optional-dependencies]
+comma = [
+    { name = "cereal" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "beartype", specifier = ">=0.22.9" },
+    { name = "cereal", marker = "extra == 'comma'" },
     { name = "eclipse-zenoh" },
     { name = "einops", specifier = ">=0.8.2" },
     { name = "jaxtyping", specifier = ">=0.3.9" },
@@ -1734,6 +1746,7 @@ requires-dist = [
     { name = "rerun-sdk", specifier = ">=0.30" },
     { name = "unitree-sdk2py", git = "https://github.com/Kaweees/unitree_sdk2_python.git?branch=main" },
 ]
+provides-extras = ["comma"]
 
 [[package]]
 name = "monopriors"
