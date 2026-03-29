@@ -198,7 +198,8 @@ def main():
                 buffered = frame_queue.qsize() - buffered
                 if buffered > 0:
                     print(f"Buffered {buffered} frames during backend init")
-                focal = args.focal if args.focal else float(w) * 0.55
+                # OS04C10 intrinsics: native 1344x760, focal=425.25
+                focal = args.focal if args.focal else 425.25 * (float(w) / 1344.0)
                 cx, cy = w / 2.0, h / 2.0
 
             should_process = True

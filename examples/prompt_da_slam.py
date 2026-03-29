@@ -38,7 +38,7 @@ def main():
     parser.add_argument("--depth-every", type=int, default=5,
                         help="Run depth completion every N frames (default: 5)")
     parser.add_argument("--focal", type=float, default=None,
-                        help="Focal length override (default: 0.55 * width)")
+                        help="Focal length override (default: OS04C10 intrinsics scaled to frame width)")
     parser.add_argument("--max-frames", type=int, default=300,
                         help="Max frames to process (default: 300)")
     parser.add_argument("--web-port", type=int, default=9090,
@@ -59,7 +59,8 @@ def main():
     else:
         scale = 1.0
 
-    focal = args.focal if args.focal else w * 0.55
+    # OS04C10 intrinsics: native 1344x760, focal=425.25 (567.0 / 4 * 3)
+    focal = args.focal if args.focal else 425.25 * (w / 1344.0)
     cx, cy = w / 2.0, h / 2.0
 
     # Init Rerun web viewer

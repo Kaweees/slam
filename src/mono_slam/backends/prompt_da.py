@@ -41,7 +41,8 @@ class PromptDABackend(BaseSLAMBackend):
             model_type=model_type, device=device,
         )
 
-        self._focal = kwargs.get("focal") or float(width) * 0.55
+        # OS04C10 intrinsics: native 1344x760, focal=425.25 (567.0 / 4 * 3)
+        self._focal = kwargs.get("focal") or 425.25 * (float(width) / 1344.0)
         self._cx = width / 2.0
         self._cy = height / 2.0
         self._frame_count = 0
