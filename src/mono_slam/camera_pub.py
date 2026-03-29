@@ -232,9 +232,9 @@ def main():
                         help="Show local preview window (requires display)")
     parser.add_argument("--comma", type=str, default=None, metavar="ADDR",
                         help="Connect to comma device at this IP/hostname")
-    parser.add_argument("--comma-camera", type=str, default="road",
+    parser.add_argument("--comma-camera", type=str, default="wide",
                         choices=list(COMMA_STREAM_MAP),
-                        help="Which comma camera to use (default: road)")
+                        help="Which comma camera to use (default: wide)")
     parser.add_argument("--imu", action="store_true",
                         help="Also publish IMU data from comma device "
                              "(requires --comma)")

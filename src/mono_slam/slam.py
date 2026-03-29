@@ -26,60 +26,74 @@ IMU_DEFAULTS = {
     "Frequency": 100,          # IMU sample rate (Hz)
 }
 
-# Camera-to-body (IMU) transform for comma 3/3X.
-# Camera is front-facing, IMU is in the device body.  This is a reasonable
-# approximation — refine with actual extrinsic calibration for best results.
-# Identity rotation (camera and IMU roughly aligned), small translation.
-TBC_DEFAULT = np.array([
-    [0.0, -1.0,  0.0,  0.0],
-    [0.0,  0.0, -1.0,  0.0],
-    [1.0,  0.0,  0.0,  0.0],
-    [0.0,  0.0,  0.0,  1.0],
-], dtype=np.float64)
+# Camera-to-body (IMU) transform for comma body (mici).
+# wideFromDeviceEuler ≈ [0, 0, 0] — wide camera is aligned with device frame.
+# Identity rotation, small translation for physical offset between IMU and
+# camera chip on the PCB.
+TBC_DEFAULT = np.eye(4, dtype=np.float64)
+
+
+# OS04C10 wide fisheye calibration at native 1344×760.
+# Intrinsics and KannalaBrandt8 distortion from openpilot + live calibration.
+NATIVE_W, NATIVE_H = 1344, 760
+NATIVE_FX, NATIVE_FY = 425.25, 425.25
+NATIVE_CX, NATIVE_CY = 672.0, 380.0
+NATIVE_K1, NATIVE_K2 = 0.0460, 0.0020
+NATIVE_K3, NATIVE_K4 = -0.0008, 0.0001
 
 
 def write_settings_yaml(path: str, width: int = 640, height: int = 480,
                         focal: float = None, fps: float = 20.0,
                         use_imu: bool = False):
-    """Write an OpenCV FileStorage YAML settings file for ORB-SLAM3."""
+    """Write an OpenCV FileStorage YAML settings file for ORB-SLAM3.
+
+    Uses the KannalaBrandt8 fisheye model with OS04C10 wide camera
+    calibration.  Intrinsics are scaled from native 1344×760 to the
+    requested resolution.
+    """
+    scale = float(width) / NATIVE_W
     if focal is None:
-        # OS04C10 camera intrinsics (from openpilot calibration):
-        # native 1344x760, focal=425.25 (567.0 / 4 * 3)
-        focal = 425.25 * (float(width) / 1344.0)
-    cx = width / 2.0
-    cy = height / 2.0
+        fx = NATIVE_FX * scale
+        fy = NATIVE_FY * scale
+    else:
+        fx = fy = focal
+    cx = NATIVE_CX * scale
+    cy = NATIVE_CY * scale
+    h = int(NATIVE_H * scale)
+
+    # KannalaBrandt8 distortion coefficients are resolution-independent
+    k1, k2, k3, k4 = NATIVE_K1, NATIVE_K2, NATIVE_K3, NATIVE_K4
 
     # ORB-SLAM3 uses OpenCV's FileStorage YAML format (%YAML:1.0)
-    # Both Camera.* (legacy) and Camera1.* (new) keys are provided
     content = f"""%YAML:1.0
 ---
 
-Camera.type: "PinHole"
+Camera.type: "KannalaBrandt8"
 
-Camera.fx: {focal:.6f}
-Camera.fy: {focal:.6f}
+Camera.fx: {fx:.6f}
+Camera.fy: {fy:.6f}
 Camera.cx: {cx:.6f}
 Camera.cy: {cy:.6f}
 
-Camera.k1: 0.0
-Camera.k2: 0.0
-Camera.p1: 0.0
-Camera.p2: 0.0
+Camera.k1: {k1}
+Camera.k2: {k2}
+Camera.k3: {k3}
+Camera.k4: {k4}
 
 Camera.width: {width}
-Camera.height: {height}
+Camera.height: {h}
 Camera.fps: {fps:.1f}
 Camera.RGB: 0
 
-Camera1.fx: {focal:.6f}
-Camera1.fy: {focal:.6f}
+Camera1.fx: {fx:.6f}
+Camera1.fy: {fy:.6f}
 Camera1.cx: {cx:.6f}
 Camera1.cy: {cy:.6f}
 
-Camera1.k1: 0.0
-Camera1.k2: 0.0
-Camera1.p1: 0.0
-Camera1.p2: 0.0
+Camera1.k1: {k1}
+Camera1.k2: {k2}
+Camera1.k3: {k3}
+Camera1.k4: {k4}
 
 ORBextractor.nFeatures: 2000
 ORBextractor.scaleFactor: 1.200000
@@ -109,7 +123,7 @@ IMU.GyroWalk: {IMU_DEFAULTS['GyroWalk']:.6e}
 IMU.AccWalk: {IMU_DEFAULTS['AccWalk']:.6e}
 IMU.Frequency: {IMU_DEFAULTS['Frequency']}
 
-# Camera-to-body (IMU) extrinsic transform
+# Camera-to-body (IMU) extrinsic — wide cam aligned with device frame
 IMU.T_b_c1: !!opencv-matrix
   rows: 4
   cols: 4

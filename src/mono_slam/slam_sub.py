@@ -240,7 +240,8 @@ def main():
                     focal=args.focal,
                     use_imu=args.imu,
                 )
-                focal = args.focal if args.focal else 425.25 * (float(w) / 1344.0)
+                from mono_slam.slam import NATIVE_FX, NATIVE_W
+                focal = args.focal if args.focal else NATIVE_FX * (float(w) / NATIVE_W)
                 cx, cy = w / 2.0, h / 2.0
 
             # Frame skipping during initialization
