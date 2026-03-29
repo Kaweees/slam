@@ -15,6 +15,7 @@ The module also exposes helpers that ``slam_sub`` can call when
 from __future__ import annotations
 
 import numpy as np
+import torch
 
 # Prompt depth input resolution expected by the model
 PROMPT_H, PROMPT_W = 192, 256
@@ -74,12 +75,10 @@ def sparse_points_to_prompt_depth(
 
     depth_mm = (z * 1000.0).astype(np.uint16)
 
+    # Write farthest points first so closer ones overwrite them (closest wins).
+    order = np.argsort(z)[::-1]
     prompt = np.zeros((PROMPT_H, PROMPT_W), dtype=np.uint16)
-    # If multiple points land on the same pixel, keep the closest
-    for i in range(len(pu)):
-        cur = prompt[pv[i], pu[i]]
-        if cur == 0 or depth_mm[i] < cur:
-            prompt[pv[i], pu[i]] = depth_mm[i]
+    prompt[pv[order], pu[order]] = depth_mm[order]
 
     return prompt
 
@@ -116,5 +115,6 @@ class DepthCompleter:
         -------
         depth_mm : (H, W) uint16 dense metric depth in millimetres.
         """
-        result = self._predictor(rgb=rgb_hw3, prompt_depth=prompt_depth)
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            result = self._predictor(rgb=rgb_hw3, prompt_depth=prompt_depth)
         return result.depth_mm

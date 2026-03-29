@@ -22,7 +22,8 @@ dependencies = [
   "beartype>=0.22.9",
   "jaxtyping>=0.3.9",
   "einops>=0.8.2",
-  "unitree-sdk2py"
+  "unitree-sdk2py",
+  "xformers>=0.0.35",
 ]
 
 [project.optional-dependencies]

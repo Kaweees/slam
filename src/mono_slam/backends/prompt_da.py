@@ -36,6 +36,8 @@ class PromptDABackend(BaseSLAMBackend):
 
         model_type = kwargs.get("depth_model", "large")
         device = kwargs.get("depth_device", "cuda")
+        # Run depth completion every N frames. At ~110ms/frame this limits
+        # throughput to ~9fps if set to 1; set higher to keep up with 30fps input.
         self._depth_every = int(kwargs.get("depth_every", 5))
         self._depth_completer = DepthCompleter(
             model_type=model_type, device=device,

@@ -23,27 +23,46 @@ TOPIC = "slam/camera/frame"
 POSE_TOPIC = "slam/pose"
 
 # Costmap parameters
-COSTMAP_SIZE = 200       # grid cells per side
-COSTMAP_RESOLUTION = 0.05  # meters per cell (5cm)
-COSTMAP_RADIUS = 3       # inflation radius in cells
+COSTMAP_SIZE = 200         # grid cells per side
+COSTMAP_RESOLUTION = 0.05  # meters per cell (5 cm) — adjust to match SLAM scale
+COSTMAP_RADIUS = 3         # inflation radius in cells
 COSTMAP_HALF = COSTMAP_SIZE // 2
+# Only include points within this Y range (relative to camera height) as obstacles.
+# Monocular SLAM has no metric scale, so these are in SLAM units. Tune as needed.
+COSTMAP_Y_MIN = -0.5       # exclude points far below camera (floor plane noise)
+COSTMAP_Y_MAX = 2.0        # exclude points far above camera (ceiling features)
+# Maximum accumulated unique points to keep (deduplicated via voxel snap)
+COSTMAP_MAX_PTS = 50_000
 
 
 def build_costmap(pts: np.ndarray, cam_pos: np.ndarray | None = None) -> np.ndarray:
     """Project 3D map points onto XZ ground plane as a 2D costmap.
 
+    The grid is re-centred on the camera position so the robot is always visible.
     Returns an RGB image: black=free, red=occupied (inflated), green=camera.
     """
     grid = np.zeros((COSTMAP_SIZE, COSTMAP_SIZE, 3), dtype=np.uint8)
 
-    # Project points onto XZ plane, centred on the map origin
-    gx = (pts[:, 0] / COSTMAP_RESOLUTION + COSTMAP_HALF).astype(np.int32)
-    gz = (pts[:, 2] / COSTMAP_RESOLUTION + COSTMAP_HALF).astype(np.int32)
+    # Re-centre on camera so the robot stays in the middle of the map.
+    origin_x = cam_pos[0] if cam_pos is not None else 0.0
+    origin_z = cam_pos[2] if cam_pos is not None else 0.0
+
+    # Filter by height to remove ceiling/floor noise before projecting.
+    if cam_pos is not None:
+        cam_y = cam_pos[1]
+        y_rel = pts[:, 1] - cam_y
+        height_mask = (y_rel >= COSTMAP_Y_MIN) & (y_rel <= COSTMAP_Y_MAX)
+        pts = pts[height_mask]
+
+    if len(pts) == 0:
+        return grid
+
+    gx = ((pts[:, 0] - origin_x) / COSTMAP_RESOLUTION + COSTMAP_HALF).astype(np.int32)
+    gz = ((pts[:, 2] - origin_z) / COSTMAP_RESOLUTION + COSTMAP_HALF).astype(np.int32)
 
     mask = (gx >= 0) & (gx < COSTMAP_SIZE) & (gz >= 0) & (gz < COSTMAP_SIZE)
     gx, gz = gx[mask], gz[mask]
 
-    # Build occupancy channel then inflate
     occ = np.zeros((COSTMAP_SIZE, COSTMAP_SIZE), dtype=np.uint8)
     occ[gz, gx] = 255
     if COSTMAP_RADIUS > 0:
@@ -53,16 +72,12 @@ def build_costmap(pts: np.ndarray, cam_pos: np.ndarray | None = None) -> np.ndar
         )
         occ = cv2.dilate(occ, kernel)
 
-    # Red channel = cost
-    grid[:, :, 2] = occ  # BGR: red is channel 2... but Rerun expects RGB
-    grid[:, :, 0] = occ  # So put cost in R channel
+    # Rerun expects RGB — red obstacles in channel 0 only.
+    grid[:, :, 0] = occ
 
-    # Mark camera position in green
+    # Mark camera position in green at the grid centre.
     if cam_pos is not None:
-        cx = int(cam_pos[0] / COSTMAP_RESOLUTION + COSTMAP_HALF)
-        cz = int(cam_pos[2] / COSTMAP_RESOLUTION + COSTMAP_HALF)
-        if 0 <= cx < COSTMAP_SIZE and 0 <= cz < COSTMAP_SIZE:
-            cv2.circle(grid, (cx, cz), 3, (0, 255, 0), -1)
+        cv2.circle(grid, (COSTMAP_HALF, COSTMAP_HALF), 3, (0, 255, 0), -1)
 
     return grid
 
@@ -114,6 +129,8 @@ def main():
                         help="Override focal length (default: auto-estimate from frame width)")
     parser.add_argument("--drop-nonmonotonic", action="store_true",
                         help="Drop frames whose timestamps go backwards or repeat")
+    parser.add_argument("--depth-every", type=int, default=5,
+                        help="Run depth completion every N frames for prompt-da backend (default: 5)")
     args = parser.parse_args()
 
     # init Rerun with gRPC server + web viewer
@@ -159,6 +176,11 @@ def main():
     dropped_nonmonotonic = 0
     last_timestamp = None
     last_state_name = "NOT_INITIALIZED"
+    accumulated_pts = np.empty((0, 3), dtype=np.float32)
+    # Track the previous map-point count to detect ORB-SLAM3 map resets.
+    # A reset drops the map to near-zero; flush accumulated_pts so ghost
+    # points from the dead map don't pollute the costmap.
+    last_num_map_points = 0
 
     try:
         while True:
@@ -183,15 +205,17 @@ def main():
                 h, w = gray.shape[:2]
                 print(f"First frame received: {w}x{h}, initializing '{args.backend}' backend...")
                 buffered = frame_queue.qsize()
+                backend_kwargs = dict(
+                    width=w,
+                    height=h,
+                    vocab_path=args.vocab,
+                    settings_path=args.settings,
+                    focal=args.focal,
+                    depth_every=args.depth_every,
+                )
                 try:
                     backend_cls = get_backend(active_backend_name)
-                    backend = backend_cls(
-                        width=w,
-                        height=h,
-                        vocab_path=args.vocab,
-                        settings_path=args.settings,
-                        focal=args.focal,
-                    )
+                    backend = backend_cls(**backend_kwargs)
                 except Exception as exc:
                     if active_backend_name != "orb" and not args.strict_backend:
                         print(
@@ -200,13 +224,7 @@ def main():
                         )
                         active_backend_name = "orb"
                         backend_cls = get_backend(active_backend_name)
-                        backend = backend_cls(
-                            width=w,
-                            height=h,
-                            vocab_path=args.vocab,
-                            settings_path=args.settings,
-                            focal=args.focal,
-                        )
+                        backend = backend_cls(**backend_kwargs)
                     else:
                         raise
                 buffered = frame_queue.qsize() - buffered
@@ -238,13 +256,7 @@ def main():
                     backend.shutdown()
                     active_backend_name = "orb"
                     backend_cls = get_backend(active_backend_name)
-                    backend = backend_cls(
-                        width=w,
-                        height=h,
-                        vocab_path=args.vocab,
-                        settings_path=args.settings,
-                        focal=args.focal,
-                    )
+                    backend = backend_cls(**backend_kwargs)
                     result = backend.process(gray, timestamp)
                 else:
                     raise
@@ -306,12 +318,34 @@ def main():
                 T_wc[:3, 3] = t_wc
                 pose_pub.put(encode_pose(timestamp, T_wc, state_name))
 
+            # Detect an ORB-SLAM3 map reset: point count collapses to near-zero
+            # after having had a substantial map. Clear stale ghost points.
+            cur_num_map_points = result.num_map_points
+            if last_num_map_points > 200 and cur_num_map_points < 50:
+                accumulated_pts = np.empty((0, 3), dtype=np.float32)
+                print(f"[{frame_count}] Map reset detected ({last_num_map_points} → "
+                      f"{cur_num_map_points} points) — costmap cleared")
+            last_num_map_points = cur_num_map_points
+
             # log bird's-eye costmap (XZ projection of map points)
             if pts is not None and pts.ndim == 2 and pts.shape[0] > 0:
+                # Merge new points into accumulated set, deduplicate by voxel-snap
+                # with numpy unique (O(N log N)) to avoid unbounded growth.
+                all_pts = (
+                    np.vstack([accumulated_pts, pts[:, :3]])
+                    if accumulated_pts.shape[0] > 0
+                    else pts[:, :3].copy()
+                )
+                voxels = np.round(all_pts / COSTMAP_RESOLUTION).astype(np.int32)
+                _, unique_idx = np.unique(voxels, axis=0, return_index=True)
+                accumulated_pts = all_pts[unique_idx]
+                if accumulated_pts.shape[0] > COSTMAP_MAX_PTS:
+                    accumulated_pts = accumulated_pts[-COSTMAP_MAX_PTS:]
+            if accumulated_pts.shape[0] > 0:
                 cam_pos = None
                 if pose is not None and pose.shape == (4, 4):
                     cam_pos = -pose[:3, :3].T @ pose[:3, 3]
-                costmap = build_costmap(pts[:, :3], cam_pos)
+                costmap = build_costmap(accumulated_pts, cam_pos)
                 rr.log("costmap", rr.Image(costmap))
 
             # Log dense depth if backend provides it (e.g. prompt-da)
