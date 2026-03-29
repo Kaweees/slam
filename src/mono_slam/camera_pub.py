@@ -1,16 +1,23 @@
 """
-Camera Publisher — captures frames from webcam, video file, or comma device
-and publishes them over Zenoh on topic "slam/camera/frame".
+Camera (+ IMU) Publisher — captures frames from webcam, video file, or comma
+device and publishes them over Zenoh.
 
-Each message is raw bytes: [8-byte float64 timestamp | 4-byte int32 height |
-4-byte int32 width | 8-byte int64 sequence | raw grayscale pixel data].
+Topics:
+    slam/camera/frame  — grayscale video frames
+    slam/imu           — IMU samples (accel + gyro) [comma mode only]
+
+Frame format: [8B float64 timestamp | 4B int32 height | 4B int32 width |
+               8B int64 sequence | raw grayscale pixels]
+
+IMU format:   N × [7 × 8B float64] = N × 56B
+              Each sample: (ax, ay, az, gx, gy, gz, timestamp)
+              ax/ay/az in m/s², gx/gy/gz in rad/s, timestamp in seconds.
 
 Usage:
     python -m mono_slam.camera_pub                  # webcam
     python -m mono_slam.camera_pub video.mp4        # video file
-    python -m mono_slam.camera_pub --width 640      # custom resolution
-    python -m mono_slam.camera_pub --comma 192.168.1.10   # comma device
-    python -m mono_slam.camera_pub --comma 192.168.1.10 --comma-camera wide  # wide road cam
+    python -m mono_slam.camera_pub --comma 192.168.1.10          # comma device
+    python -m mono_slam.camera_pub --comma 192.168.1.10 --imu    # comma + IMU
 """
 
 import argparse
@@ -21,7 +28,8 @@ import cv2
 import numpy as np
 import zenoh
 
-TOPIC = "slam/camera/frame"
+FRAME_TOPIC = "slam/camera/frame"
+IMU_TOPIC = "slam/imu"
 
 COMMA_STREAM_MAP = {
     "road": "VISION_STREAM_ROAD",
@@ -37,6 +45,17 @@ def encode_frame(timestamp: float, frame: np.ndarray, seq: int) -> bytes:
     return header + frame.tobytes()
 
 
+def encode_imu(samples: list[tuple]) -> bytes:
+    """Encode a batch of IMU samples into bytes.
+
+    Each sample is (ax, ay, az, gx, gy, gz, timestamp).
+    """
+    parts = []
+    for ax, ay, az, gx, gy, gz, t in samples:
+        parts.append(struct.pack("<7d", ax, ay, az, gx, gy, gz, t))
+    return b"".join(parts)
+
+
 def _compute_scale(src_w: int, src_h: int, target_w: int):
     """Return (scale, w, h) for resizing."""
     if src_w > target_w:
@@ -45,8 +64,9 @@ def _compute_scale(src_w: int, src_h: int, target_w: int):
     return 1.0, src_w, src_h
 
 
-def _run_comma(args, pub):
-    """Capture loop for comma device via VisionIPC."""
+def _run_comma(args, frame_pub, imu_pub):
+    """Capture loop for comma device via VisionIPC + optional cereal IMU."""
+    import threading
     from cereal.visionipc import VisionIpcClient, VisionStreamType
 
     stream_name = COMMA_STREAM_MAP[args.comma_camera]
@@ -56,7 +76,6 @@ def _run_comma(args, pub):
           f"(stream: {args.comma_camera})...")
     vipc = VisionIpcClient("camerad", stream_type, True, addr=args.comma)
 
-    # wait for connection
     while not vipc.connect(True):
         time.sleep(0.1)
     vipc.recv()  # first frame to get dimensions
@@ -64,9 +83,39 @@ def _run_comma(args, pub):
     src_w, src_h = vipc.width, vipc.height
     scale, w, h = _compute_scale(src_w, src_h, args.width)
 
+    # --- Optional IMU forwarding via cereal ---
+    imu_buffer = []
+    imu_lock = threading.Lock()
+    imu_thread = None
+
+    if args.imu and imu_pub is not None:
+        import cereal.messaging as messaging
+
+        def _imu_loop():
+            sm = messaging.SubMaster(
+                ["accelerometer", "gyroscope"], addr=args.comma)
+            last_accel = (0.0, 0.0, 0.0)
+            last_gyro = (0.0, 0.0, 0.0)
+            while True:
+                sm.update(100)  # 100ms timeout
+                if sm.updated["accelerometer"]:
+                    a = sm["accelerometer"].acceleration
+                    last_accel = (a.v[0], a.v[1], a.v[2])
+                if sm.updated["gyroscope"]:
+                    g = sm["gyroscope"].gyroscope
+                    last_gyro = (g.v[0], g.v[1], g.v[2])
+                    t = sm.logMonoTime["gyroscope"] / 1e9
+                    sample = (*last_accel, *last_gyro, t)
+                    with imu_lock:
+                        imu_buffer.append(sample)
+
+        imu_thread = threading.Thread(target=_imu_loop, daemon=True)
+        imu_thread.start()
+        print("IMU forwarding enabled (accelerometer + gyroscope)")
+
     dt = 1.0 / args.fps
     seq = 0
-    print(f"Publishing frames on '{TOPIC}' — {w}x{h} @ {args.fps} fps")
+    print(f"Publishing frames on '{FRAME_TOPIC}' — {w}x{h} @ {args.fps} fps")
     print(f"Source: comma device {args.comma} ({args.comma_camera} camera)")
     print("Press Ctrl+C to stop")
 
@@ -84,9 +133,17 @@ def _run_comma(args, pub):
                 frame = cv2.resize(frame, (w, h))
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            timestamp = buf.timestamp_eof / 1e9  # ns → seconds
+            timestamp = buf.timestamp_eof / 1e9
 
-            pub.put(encode_frame(timestamp, gray, seq))
+            frame_pub.put(encode_frame(timestamp, gray, seq))
+
+            # Flush accumulated IMU samples
+            if args.imu and imu_pub is not None:
+                with imu_lock:
+                    if imu_buffer:
+                        imu_pub.put(encode_imu(imu_buffer))
+                        imu_buffer.clear()
+
             seq += 1
 
             if args.show:
@@ -104,7 +161,7 @@ def _run_comma(args, pub):
         cv2.destroyAllWindows()
 
 
-def _run_opencv(args, pub):
+def _run_opencv(args, frame_pub):
     """Capture loop for webcam / video file via OpenCV."""
     source = int(args.source) if args.source.isdigit() else args.source
 
@@ -118,7 +175,7 @@ def _run_opencv(args, pub):
 
     dt = 1.0 / args.fps
     seq = 0
-    print(f"Publishing frames on '{TOPIC}' — {w}x{h} @ {args.fps} fps")
+    print(f"Publishing frames on '{FRAME_TOPIC}' — {w}x{h} @ {args.fps} fps")
     print(f"Source: {'webcam' if isinstance(source, int) else source}")
     print("Press Ctrl+C to stop")
 
@@ -128,11 +185,11 @@ def _run_opencv(args, pub):
             ret, frame = cap.read()
             if not ret:
                 if isinstance(source, int):
-                    continue  # transient webcam failure
+                    continue
                 if args.loop and not isinstance(source, int):
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
-                break  # end of video file
+                break
 
             if scale != 1.0:
                 frame = cv2.resize(frame, (w, h))
@@ -140,7 +197,7 @@ def _run_opencv(args, pub):
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             timestamp = time.time()
 
-            pub.put(encode_frame(timestamp, gray, seq))
+            frame_pub.put(encode_frame(timestamp, gray, seq))
             seq += 1
 
             if args.show:
@@ -148,7 +205,6 @@ def _run_opencv(args, pub):
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
-            # rate-limit
             elapsed = time.monotonic() - t0
             if elapsed < dt:
                 time.sleep(dt - elapsed)
@@ -161,12 +217,12 @@ def _run_opencv(args, pub):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Camera frame publisher (Zenoh)")
+    parser = argparse.ArgumentParser(description="Camera (+IMU) publisher (Zenoh)")
     parser.add_argument("source", nargs="?", default="0",
                         help="Video source: device index (0) or file path "
                              "(ignored when --comma is set)")
     parser.add_argument("--width", type=int, default=640, help="Target frame width")
-    parser.add_argument("--fps", type=float, default=30.0,
+    parser.add_argument("--fps", type=float, default=20.0,
                         help="Max publish rate (fps)")
     parser.add_argument("--connect", type=str, default=None,
                         help="Zenoh router endpoint (e.g. tcp/localhost:7447)")
@@ -175,27 +231,35 @@ def main():
     parser.add_argument("--show", action="store_true",
                         help="Show local preview window (requires display)")
     parser.add_argument("--comma", type=str, default=None, metavar="ADDR",
-                        help="Connect to comma device at this IP/hostname "
-                             "(requires cereal package)")
+                        help="Connect to comma device at this IP/hostname")
     parser.add_argument("--comma-camera", type=str, default="road",
                         choices=list(COMMA_STREAM_MAP),
                         help="Which comma camera to use (default: road)")
+    parser.add_argument("--imu", action="store_true",
+                        help="Also publish IMU data from comma device "
+                             "(requires --comma)")
     args = parser.parse_args()
+
+    if args.imu and not args.comma:
+        parser.error("--imu requires --comma")
 
     # open Zenoh session
     conf = zenoh.Config()
     if args.connect:
         conf.insert_json5("connect/endpoints", f'["{args.connect}"]')
     session = zenoh.open(conf)
-    pub = session.declare_publisher(TOPIC)
+    frame_pub = session.declare_publisher(FRAME_TOPIC)
+    imu_pub = session.declare_publisher(IMU_TOPIC) if args.imu else None
 
     try:
         if args.comma:
-            _run_comma(args, pub)
+            _run_comma(args, frame_pub, imu_pub)
         else:
-            _run_opencv(args, pub)
+            _run_opencv(args, frame_pub)
     finally:
-        pub.undeclare()
+        frame_pub.undeclare()
+        if imu_pub:
+            imu_pub.undeclare()
         session.close()
 
 

@@ -18,10 +18,8 @@ dependencies = [
   "orbslam3-python",
   "eclipse-zenoh",
   "rerun-sdk>=0.30",
-  "monopriors",
   "beartype>=0.22.9",
   "jaxtyping>=0.3.9",
-  "einops>=0.8.2",
   "unitree-sdk2py",
   "xformers>=0.0.35",
 ]
@@ -30,7 +28,6 @@ dependencies = [
 comma = ["cereal"]
 
 [tool.uv.sources]
-monopriors = { git = "https://github.com/pablovela5620/monoprior.git" }
 onnxruntime-gpu = { index = "jetson-ai-lab" }
 unitree-sdk2py = { git = "https://github.com/Kaweees/unitree_sdk2_python.git", branch = "main" }
 

@@ -1,4 +1,4 @@
-"""ORB-SLAM3 backend adapter using the existing local wrapper."""
+"""ORB-SLAM3 backend adapter — supports mono and mono-inertial modes."""
 
 from __future__ import annotations
 
@@ -11,26 +11,27 @@ from mono_slam.slam import SLAMSystem
 
 
 class ORBSLAM3Backend(BaseSLAMBackend):
-    """Adapter around the existing ORB-SLAM3 system."""
+    """Adapter around the ORB-SLAM3 system."""
 
     name = "orb"
 
     def __init__(self, width: int, height: int, **kwargs):
         super().__init__(width, height, **kwargs)
-        vocab_path = kwargs.get("vocab_path")
-        settings_path = kwargs.get("settings_path")
-        focal = kwargs.get("focal")
+        self._use_imu = kwargs.get("use_imu", False)
         self._slam = SLAMSystem(
-            vocab_path=vocab_path,
-            settings_path=settings_path,
+            vocab_path=kwargs.get("vocab_path"),
+            settings_path=kwargs.get("settings_path"),
             width=width,
             height=height,
-            focal=focal,
+            focal=kwargs.get("focal"),
+            use_imu=self._use_imu,
         )
 
-    def process(self, gray: np.ndarray, timestamp: float) -> SLAMBackendResult:
+    def process(self, gray: np.ndarray, timestamp: float,
+                imu_measurements: list | None = None) -> SLAMBackendResult:
         t0 = time.perf_counter()
-        result = self._slam.process(gray, timestamp)
+        result = self._slam.process(gray, timestamp,
+                                    imu_measurements=imu_measurements)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
         state_name = str(result.state).rsplit(".", 1)[-1]
@@ -39,8 +40,6 @@ class ORBSLAM3Backend(BaseSLAMBackend):
 
         pts_np = None
         if points:
-            # get_map_points() returns tuples of ((x,y,z), (u,v));
-            # extract just the 3D world coordinates
             coords = []
             for p in points:
                 if isinstance(p, (tuple, list)) and len(p) >= 2 and len(p[0]) >= 3:
