@@ -20,6 +20,7 @@ import zenoh
 from mono_slam.backends import AVAILABLE_BACKENDS, get_backend
 
 TOPIC = "slam/camera/frame"
+POSE_TOPIC = "slam/pose"
 
 # Costmap parameters
 COSTMAP_SIZE = 200       # grid cells per side
@@ -64,6 +65,16 @@ def build_costmap(pts: np.ndarray, cam_pos: np.ndarray | None = None) -> np.ndar
             cv2.circle(grid, (cx, cz), 3, (0, 255, 0), -1)
 
     return grid
+
+
+def encode_pose(timestamp: float, pose_cw: np.ndarray, state: str) -> bytes:
+    """Encode a camera-to-world 4x4 pose into a binary message.
+
+    Format: [8-byte float64 timestamp | 128-byte float64[16] row-major 4x4
+    camera-to-world pose | UTF-8 state string].
+    """
+    header = struct.pack("<d", timestamp)
+    return header + pose_cw.astype(np.float64).tobytes() + state.encode("utf-8")
 
 
 def decode_frame(payload: bytes) -> tuple[float, np.ndarray]:
@@ -135,7 +146,10 @@ def main():
         timestamp, gray = decode_frame(payload)
         frame_queue.put((timestamp, gray))
 
+    pose_pub = session.declare_publisher(POSE_TOPIC)
+
     print(f"Subscribing to '{TOPIC}' — waiting for frames...")
+    print(f"Publishing poses on '{POSE_TOPIC}'")
     print(f"Selected backend: {args.backend}")
     sub = session.declare_subscriber(TOPIC, _on_sample)
     active_backend_name = args.backend
@@ -198,8 +212,7 @@ def main():
                 buffered = frame_queue.qsize() - buffered
                 if buffered > 0:
                     print(f"Buffered {buffered} frames during backend init")
-                # OS04C10 intrinsics: native 1344x760, focal=425.25
-                focal = args.focal if args.focal else 425.25 * (float(w) / 1344.0)
+                focal = args.focal if args.focal else float(w) * 0.55
                 cx, cy = w / 2.0, h / 2.0
 
             should_process = True
@@ -287,6 +300,12 @@ def main():
                 ))
                 rr.log("world/camera/image", rr.Image(gray))
 
+                # publish camera-to-world pose over Zenoh
+                T_wc = np.eye(4, dtype=np.float64)
+                T_wc[:3, :3] = R_wc
+                T_wc[:3, 3] = t_wc
+                pose_pub.put(encode_pose(timestamp, T_wc, state_name))
+
             # log bird's-eye costmap (XZ projection of map points)
             if pts is not None and pts.ndim == 2 and pts.shape[0] > 0:
                 cam_pos = None
@@ -311,6 +330,7 @@ def main():
         if backend:
             backend.shutdown()
         sub.undeclare()
+        pose_pub.undeclare()
         session.close()
         if dropped_nonmonotonic:
             print(f"Dropped {dropped_nonmonotonic} non-monotonic frames")
