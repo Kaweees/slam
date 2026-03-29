@@ -34,12 +34,14 @@ TBC_DEFAULT = np.eye(4, dtype=np.float64)
 
 
 # OS04C10 wide fisheye calibration at native 1344×760.
-# Intrinsics and KannalaBrandt8 distortion from openpilot + live calibration.
+# Intrinsics from cv2.fisheye calibration (K matrix), distortion from D vector.
 NATIVE_W, NATIVE_H = 1344, 760
-NATIVE_FX, NATIVE_FY = 425.25, 425.25
+NATIVE_FX, NATIVE_FY = 598.0, 598.0
 NATIVE_CX, NATIVE_CY = 672.0, 380.0
-NATIVE_K1, NATIVE_K2 = 0.0460, 0.0020
-NATIVE_K3, NATIVE_K4 = -0.0008, 0.0001
+NATIVE_K1 = -0.0143559
+NATIVE_K2 = -0.00558797
+NATIVE_K3 = 0.00237681
+NATIVE_K4 = -0.00077131
 
 
 def write_settings_yaml(path: str, width: int = 640, height: int = 480,
