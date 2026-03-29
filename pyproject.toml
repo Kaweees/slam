@@ -24,6 +24,9 @@ dependencies = [
   "einops>=0.8.2",
 ]
 
+[project.optional-dependencies]
+comma = ["cereal"]
+
 [tool.uv.sources]
 monopriors = { git = "https://github.com/pablovela5620/monoprior.git" }
 onnxruntime-gpu = { index = "jetson-ai-lab" }
